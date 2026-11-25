@@ -574,7 +574,7 @@
                 <button class="prev-btn" onclick="prevQuestion('A')">←</button>
                 <div class="word-box" id="wordA" onclick="playSound(this.textContent)"></div>
                 <div class="nav-col">
-                    <button class="answer-btn" id="showAnswerA" onclick="showAnswer('A')" style="display: none;">查看答案</button>
+                    <button class="answer-btn" id="showAnswerA" onclick="toggleSingleAnswer()" style="display: none;">查看答案</button>
                     <button class="next-btn" onclick="nextQuestion('A')">→</button>
                 </div>
             </div>
@@ -827,11 +827,12 @@
                 if (groupA) {
                     groupA.style.width = '70%';
                 }
-                // 分组为1组时显示"查看答案"按钮
+                // 分组为1组时显示"查看答案"按钮（文字随常显状态变化）
                 const showAnswerBtn = document.getElementById('showAnswerA');
                 if (showAnswerBtn) {
                     showAnswerBtn.style.display = 'block';
                 }
+                updateAnswerButton();
                 // 分组为1组时按钮文字改为"复习上一个"/"下一个"
                 const prevBtnA = document.querySelector('#groupA .prev-btn');
                 if (prevBtnA) {
@@ -860,11 +861,16 @@
                 if (groupC) {
                     groupC.style.width = '45%';
                 }
-                // 非1组时隐藏"查看答案"按钮
+                // 非1组时先退出常显答案，再隐藏"查看答案"按钮
+                if (singleAnswerMode) {
+                    singleAnswerMode = false;
+                    hideAnswer('A');
+                }
                 const showAnswerBtn = document.getElementById('showAnswerA');
                 if (showAnswerBtn) {
                     showAnswerBtn.style.display = 'none';
                 }
+                updateAnswerButton();
                 // 非1组时恢复按钮文字
                 document.querySelectorAll('.prev-btn').forEach(btn => btn.textContent = '←');
                 document.querySelectorAll('.next-btn').forEach(btn => btn.textContent = '→');
@@ -925,6 +931,9 @@
             usedWords = { A: [], B: [], C: [] }; // 重置已使用单词列表
             wordStatus = {}; // 重置单词回答状态
             currentQuestionIndex = { A: -1, B: -1, C: -1 }; // 重置问题索引
+
+            // 常显答案（背单词模式）保持用户当前的选择，只同步按钮文字
+            updateAnswerButton();
 
             const timerElement = document.getElementById('timer');
             if (timerElement) {
@@ -995,21 +1004,44 @@
             }
 
             // 仅修改一处：分组为1组时，无论英→中、中→英、拼写测试模式，每个单词均自动发音，无需点击
-            if (groupsCount === 1) {
+            // 常显答案（背单词模式）下改由 revealAnswer 统一按“题目→答案→例句”朗读，避免互相打断
+            if (groupsCount === 1 && !singleAnswerMode) {
                 playSound(question);
             }
         }
 
-        function showAnswer(group) {
+        // ===== 单人模式「常显答案」（背单词模式） =====
+        let singleAnswerMode = false; // true = 已进入常显答案，按钮文字变为“隐藏答案”
+
+        // 按钮点击：查看答案 ⇄ 隐藏答案
+        function toggleSingleAnswer() {
+            if (singleAnswerMode) {
+                singleAnswerMode = false;
+                updateAnswerButton();
+                hideAnswer('A');
+            } else {
+                singleAnswerMode = true;
+                updateAnswerButton();
+                revealAnswer('A', true);
+            }
+        }
+
+        // 同步按钮文字
+        function updateAnswerButton() {
+            const btn = document.getElementById('showAnswerA');
+            if (!btn) return;
+            btn.textContent = singleAnswerMode ? '隐藏答案' : '查看答案';
+        }
+
+        // 高亮正确答案气泡并显示例句；speak=true 时按“题目 → 答案 → 例句”顺序朗读
+        function revealAnswer(group, speak) {
             if (!currentWords[group]) return;
             // 根据模式确定正确答案文本
-            let correctText, answerLang;
+            let correctText;
             if (gameMode === 'en-cn') {
                 correctText = currentWords[group].中文;
-                answerLang = 'zh-CN';
             } else {
                 correctText = currentWords[group].英文.toLowerCase();
-                answerLang = 'en-US';
             }
             // 绿色高亮正确答案气泡
             document.querySelectorAll(`#bubbles${group} .bubble`).forEach(bubble => {
@@ -1017,11 +1049,40 @@
                     bubble.classList.add('correct-highlight');
                 }
             });
-            // 1. 自动朗读正确答案：中文用 Microsoft Xiaoxiao，英文用 Microsoft Ryan
-            // 朗读完正确答案后，紧跟着自动朗读“例句：……”（含中文翻译），角色不变
-            speakAnswer(correctText, answerLang, () => speakAnswerExamples(group));
-            // 2. 在答案下方显示典型例句 1-2 个
+            // 朗读：题目 → 正确答案 → 例句（中文 Xiaoxiao、英文 Ryan）
+            if (speak) speakAnswerSequence(group, correctText);
+            // 在答案下方显示典型例句 1-2 个
             showExampleSentences(group);
+        }
+
+        // 依次排队朗读：题目 → 正确答案 → 例句（先统一打断，避免句子互相掐断）
+        function speakAnswerSequence(group, correctText) {
+            const wordObj = currentWords[group];
+            if (!wordObj || !window.speechSynthesis) return;
+            window.speechSynthesis.cancel();
+            if (gameMode === 'en-cn') {
+                if (wordObj.英文) speakWithPreferredVoice(wordObj.英文, 'en-US');
+                speakWithPreferredVoice(expandPosTags(correctText || ''), 'zh-CN');
+            } else {
+                if (wordObj.中文) speakWithPreferredVoice(wordObj.中文, 'zh-CN');
+                speakWithPreferredVoice(correctText, 'en-US');
+            }
+            speakAnswerExamples(group);
+        }
+
+        // 隐藏答案：取消高亮、清空例句框、停止朗读，回到“常隐藏”状态
+        function hideAnswer(group) {
+            document.querySelectorAll(`#bubbles${group} .bubble`).forEach(bubble => {
+                bubble.classList.remove('correct-highlight');
+            });
+            const exampleBox = document.getElementById(`example${group}`);
+            if (exampleBox) exampleBox.innerHTML = '';
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
+        }
+
+        // 兼容旧调用（等同于显示当前题答案并朗读）
+        function showAnswer(group) {
+            revealAnswer(group, true);
         }
 
         // 选取优先语音：中文优先 Microsoft Xiaoxiao，英文优先 Microsoft Ryan
@@ -1308,6 +1369,8 @@
             currentQuestionIndex[group] = usedWords[group].length - 1;
 
             setupQuestion(group, randomWord);
+            // 单人模式常显答案：换题后自动显示并朗读答案（背单词模式）
+            if (groupsCount === 1 && singleAnswerMode) revealAnswer(group, true);
             updateRemainingWords();
             const nextBtn = document.querySelector(`#group${group} .next-btn`);
             if (nextBtn) {
@@ -1588,6 +1651,8 @@
                 const prevWord = usedWords[group][currentQuestionIndex[group]];
                 currentWords[group] = prevWord;
                 setupQuestion(group, prevWord);
+                // 单人模式常显答案：复习上一个时同样继续显示答案
+                if (groupsCount === 1 && singleAnswerMode) revealAnswer(group, true);
                 const prevBtn = document.querySelector(`#group${group} .prev-btn`);
                 if (prevBtn) {
                     prevBtn.disabled = false;
@@ -1620,6 +1685,9 @@
             usedWords = { A: [], B: [], C: [] }; // 重置已使用单词列表
             wordStatus = {}; // 重置单词回答状态
             currentQuestionIndex = { A: -1, B: -1, C: -1 }; // 重置问题索引
+
+            // 常显答案（背单词模式）保持用户当前的选择，只同步按钮文字
+            updateAnswerButton();
 
             const timerElement = document.getElementById('timer');
             if (timerElement) {
